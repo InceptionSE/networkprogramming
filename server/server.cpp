@@ -8,6 +8,7 @@
 #include "process.h"
 #include "Session.h"
 #include "PrivateChat.h"
+#include "RoomChat.h"
 #include<vector>
 #include<map>
 #pragma comment(lib, "Ws2_32.lib")
@@ -24,6 +25,7 @@ using namespace std;
 CRITICAL_SECTION critical;
 vector<Session> listOnline;
 PrivateChat listPrivateChat[100];
+RoomChat listRoomChat[100];
 char str[40] = "~!@#$%^&*()_-+={[}];:',<.>/?";
 
 int chartoInt(char *s);
@@ -33,12 +35,12 @@ int handleLogin(char* data, Session &session);
 int handleRegister(char* data, Session session);
 int handleLogout(Session &session);
 int handleMessage(char* str, Session &session);
-void sendListUserOnline(SOCKET connect);
+int sendListUserOnline(SOCKET connect);
 unsigned __stdcall echoThread(void *param);
 
 
 int main(int argc, char* argv[])
-{
+{	
 	InitializeCriticalSection(&critical);
 	//Step 1: Initiate WinSock
 	WSADATA wsaData;
@@ -89,7 +91,7 @@ int main(int argc, char* argv[])
 			session.connSock = connSock;
 			strcpy(session.clientIP, clientIP);
 			session.clientPort = clientPort;
-			session.status = false;
+			session.status = -1;
 			strcpy(session.username, "");
 			_beginthreadex(0, 0, echoThread, (void *)&session, 0, 0); //start thread
 		}
@@ -116,19 +118,15 @@ unsigned __stdcall echoThread(void *param) {
 		if (ret == SOCKET_ERROR) {
 			printf("Error %d: Cannot receive data.\n", WSAGetLastError());
 			printf("Clien [%s:%d] disconnect\n", session.clientIP, session.clientPort);
-			session.status = false;
+			session.status = -1;
 			strcpy_s(session.username, 1024, "");
 			break;
 		}
 		else if (ret > 0) {
 			buff[ret] = 0;
 			printf("Receive from client[%s:%d] %s\n", session.clientIP, session.clientPort, buff);
-			/////////////////// Gui danh sach user dang online
-			if (!strcmp(buff, "GET_USER\r\n"))
-				sendListUserOnline(connectedSocket);
-			////////////////////
-			else
-			{
+			
+			
 				//Handling messages
 				char message[30];
 				int start = 0;
@@ -144,10 +142,9 @@ unsigned __stdcall echoThread(void *param) {
 						//printf("Message: %s*\n", s);
 						//printf("---%s---\n", session.username);
 						int res = handleMessage(s, session);
-
 						buff_recv = "";
 						printf("--->%d\n", res);
-						if (res != 50 && res != 40) {
+						if (res > 0 && res != 50 && res != 40 && res != 44 && res!=30) {
 							itoa(res, buff_send, 10);
 							//Echo to client
 							ret = send(connectedSocket, buff_send, strlen(buff_send), 0);
@@ -156,17 +153,15 @@ unsigned __stdcall echoThread(void *param) {
 								break;
 							}
 						}
-					}
+					}  
 				}
 				if (start < ret) {
 					buff_recv += buff;
 				}
-			}
-			///end if else
 		}
 		else {//ret == 0 -> client disconnect
-			printf("Client [%s:%d] disconnect\n", session.clientIP, session.clientPort);
-			session.status = false;
+			printf("Clien [%s:%d] disconnect\n", session.clientIP, session.clientPort);
+			session.status = -1;
 			strcpy_s(session.username, 1024, "");
 			break;
 		}
@@ -222,16 +217,7 @@ void split(char* str, char** header, char** data) {
 	*data = str + strlen(*header) + 1;
 
 }
-void splitString(string str, string& header, string& message) {
-	size_t pos = str.find(" ");
-	if (pos != string::npos) {
-		header = str.substr(0, pos);
-		message = str.substr(pos + 1);
 
-	}
-	else header = str;
-	
-}
 /**
 *	@handleLogin: return the code when user login
 *	@param data: username entered by user
@@ -252,15 +238,16 @@ int handleLogin(char* data, Session & session) {
 	{
 		split(arr, &fusername, &fpassword);
 
+		
 		for (int i = 0; i <= strlen(fpassword); i++) {
 			if (fpassword[i] == ' ' || fpassword[i] == '\n') fpassword[i] = '\0';
 		}
 		if (!strcmp(username, fusername)) {
-			if ((session).status) return 14;//da dang nhap tren client do
+			if ((session).status > -1) return 14;//da dang nhap tren client do
 			if (!strcmp(password, fpassword)) {
 
-				strcpy((session).username, username);
-				(session).status = true;
+				strcpy((session).username,username);
+				(session).status = 0;
 				///// Dang nhap thanh cong
 				EnterCriticalSection(&critical);
 				//Da dang nhap tren client khac
@@ -268,9 +255,7 @@ int handleLogin(char* data, Session & session) {
 					if (!strcmp(username, listOnline[i].username)) return 12;
 				}
 				listOnline.push_back(session);
-				for (int i = 0; i < listOnline.size(); i++) {
-					printf("%d - %s\n", (i + 1), listOnline[i].username);
-				}
+				
 				LeaveCriticalSection(&critical);
 				////////
 				return 10;
@@ -324,9 +309,9 @@ int handleRegister(char* data, Session session) {
 *	@return: a number
 **/
 int handleLogout(Session & session) {
-	if ((session).status) {
-		(session).status = false;
-		EnterCriticalSection(&critical);
+	if ((session).status > -1) {
+		(session).status = -1;
+		//EnterCriticalSection(&critical);
 		//Da dang nhap tren client khac
 		for (int i = 0; i < listOnline.size(); i++) {
 			if (!strcmp((session).username, listOnline[i].username))
@@ -335,8 +320,8 @@ int handleLogout(Session & session) {
 				break;
 			}
 		}
-		LeaveCriticalSection(&critical);
-		strcpy((session).username, "");
+		//LeaveCriticalSection(&critical);
+		strcpy((session).username,"");
 		return 15;
 	}
 	else return 16;
@@ -358,38 +343,29 @@ int handleRequestChat(char* partnerName, Session session) {
 		return 16;//user not online
 	for (int i = 0; i < listOnline.size(); i++) {
 		if (i != index1 && !strcmp(partnerName, listOnline[i].username))
-		{
+		{	
+			if (listOnline[i].status == 1)
+				return 66;
 			index2 = i;
-			EnterCriticalSection(&critical);
-			bool isChatting=false;
-			for (int j = 0; j < 100; j++)
-				if (listPrivateChat[j].status != -1) {
-					if (listPrivateChat[j].user1Idx == index2 || listPrivateChat[j].user2Idx == index2)
-						isChatting = true;
-					break;
-				}
-			LeaveCriticalSection(&critical);
-			if (isChatting) return 55;
 			char requestChatBuf[BUFF_SIZE];
 			strcpy(requestChatBuf, "REQUEST_CHAT ");
 			strcat(requestChatBuf, (session).username);
 			//strcat(requestChatBuf, "\r\n");
-			printf("%s*\n", requestChatBuf);
 			int ret = send(listOnline[i].connSock, requestChatBuf, strlen(requestChatBuf), 0);
 			if (ret == SOCKET_ERROR) {
 				printf("Send request chat fail with code: %d \n", WSAGetLastError());
 				return 54;
 			}
 			int j = 0;
-			EnterCriticalSection(&critical);
-			for (j = 0; j < 100; j++)
-				if (listPrivateChat[j].status == -1) {
+			//EnterCriticalSection(&critical);
+			for (j = 0; j < 100; j++) 
+				if (listPrivateChat[j].status == -1){
 					listPrivateChat[j].status = 0;
 					listPrivateChat[j].user1Idx = index1;
 					listPrivateChat[j].user2Idx = index2;
 					break;
 				}
-			LeaveCriticalSection(&critical);
+			//LeaveCriticalSection(&critical);
 			if (j == 100) {
 				printf("Full Room!\n");
 				return 99;
@@ -432,15 +408,17 @@ int handleResponseChat(char* data, Session session) {
 	if (ui1 == -1 || ui2 == -1)
 		return 99;
 	if (isAccept == 1) {//accept
-		EnterCriticalSection(&critical);
+		//EnterCriticalSection(&critical);
 		listPrivateChat[i].status = 1;
-		LeaveCriticalSection(&critical);
+		listOnline[ui1].status = 1;
+		listOnline[ui2].status = 1;
+		//LeaveCriticalSection(&critical);
 
 		char responseChat[BUFF_SIZE] = "RESPONSE_CHAT ";
 		char roomIdxStr[15];
 		inttoChar(roomIdxStr, i + 1);
 		strcat(responseChat, roomIdxStr);
-
+	
 		printf("---%s---\n", responseChat);
 		int ret = send(listOnline[ui1].connSock, responseChat, strlen(responseChat), 0);
 		if (ret == SOCKET_ERROR)
@@ -449,39 +427,38 @@ int handleResponseChat(char* data, Session session) {
 		if (ret == SOCKET_ERROR)
 			return 99;
 		return 50;
-	}
-	else {//not accept
-		EnterCriticalSection(&critical);
-		listPrivateChat[i].status = -1;
-		listPrivateChat[i].user1Idx = -1;
-		listPrivateChat[i].user2Idx = -1;
-		LeaveCriticalSection(&critical);
+		}
+		else {//not accept
+			//EnterCriticalSection(&critical);
+			listPrivateChat[i].status = -1;
+			listPrivateChat[i].user1Idx = -1;
+			listPrivateChat[i].user2Idx = -1;
+			//LeaveCriticalSection(&critical);
 
-		char responseChat[BUFF_SIZE] = "53";
-	//	strcat(responseChat, "\r\n");
-		printf("%s****\n", responseChat);
-		int ret = send(listOnline[ui1].connSock, responseChat, strlen(responseChat), 0);
-		if (ret == SOCKET_ERROR)
-			return 99;
-		return 53;
-	}
+			char responseChat[BUFF_SIZE] = "RESPONSE_CHAT 0";
+			strcat(responseChat, "\r\n");
+			//printf("%s****\n", responseChat);
+			int ret = send(listOnline[ui1].connSock, responseChat, strlen(responseChat), 0);
+			if (ret == SOCKET_ERROR) {
+				printf("error");
+				return 99;
+			}
+			session.status = 0;
+			return 53;
+		}
 }
 
 int handleSendChat(char* data, Session session) {
-	string roomIdStr;
-	string messageStr;
-	splitString(data, roomIdStr, messageStr);
-	char roomIdChar[BUFF_SIZE];
-	char message[BUFF_SIZE];
-	strcpy(roomIdChar, roomIdStr.c_str());
-	strcpy(message, messageStr.c_str());
-	int roomId = chartoInt(roomIdChar) - 1;
+	char* roomIdStr;
+	char* message;
+	split(data, &roomIdStr, &message);
+	int roomId = chartoInt(roomIdStr) - 1;
 	if (roomId < 0 && roomId >= 100)
 		return 99;
 	int n = listOnline.size();
 	int ui1 = listPrivateChat[roomId].user1Idx;
 	int ui2 = listPrivateChat[roomId].user2Idx;
-	if (listPrivateChat[roomId].status == 1 && ui1 >= 0 && ui2 >= 0
+	if (listPrivateChat[roomId].status == 1 &&  ui1>= 0 && ui2 >= 0 
 		&& ui1 < n && ui2 < n) {
 
 		int recvIdx;
@@ -490,11 +467,9 @@ int handleSendChat(char* data, Session session) {
 		else
 			recvIdx = ui1;
 		char sendChat[BUFF_SIZE] = "SEND ";
-		if (strcmp(message, "EXIT"))
-		{
-			strcat(sendChat, listOnline[recvIdx].username);
-			strcat(sendChat, ": ");
-		}
+		
+		strcat(sendChat, listOnline[recvIdx].username);
+		strcat(sendChat, " ");
 		strcat(sendChat, message);
 
 		int ret = send(listOnline[recvIdx].connSock, sendChat, strlen(sendChat), 0);
@@ -507,8 +482,236 @@ int handleSendChat(char* data, Session session) {
 	}
 }
 
-int handleEndChat( Session session) {
-	return 1;
+int handleEndChat(char* data, Session session) {
+	int roomId = chartoInt(data) - 1;
+	if (roomId < 0 || roomId >= 100)
+		return 99;
+	if (listPrivateChat[roomId].status < 1)
+		return 99;
+	int i;
+	for (i = 0; i < listOnline.size(); i++)
+		if (!strcmp(listOnline[i].username, session.username))
+			break;
+	if (i == listOnline.size())
+		return 54;//not online
+	int ui1 = listPrivateChat[roomId].user1Idx;
+	int ui2 = listPrivateChat[roomId].user2Idx;
+	if (ui1 != i && ui2 != i)
+		return 99;
+	//EnterCriticalSection(&critical);
+	listPrivateChat[roomId].status = -1;
+	if (ui1 < 0 || ui1 >= listOnline.size() || ui2 < 0 || ui2 >= listOnline.size()) {
+		listPrivateChat[roomId].user1Idx = -1;
+		listPrivateChat[roomId].user2Idx = -1;
+		return 54;
+	}
+	char endChat[10] = "44";
+	listOnline[ui1].status = 0;
+	listOnline[ui2].status = 0;
+	if (ui1 == i) {
+		int ret = send(listOnline[ui2].connSock, endChat, strlen(endChat), 0);
+		if (ret == SOCKET_ERROR)
+			return 99;
+		printf("%s**\n", listOnline[ui2].username);
+		return 44;
+	}
+	else {
+		int ret = send(listOnline[ui1].connSock, endChat, strlen(endChat), 0);
+		if (ret == SOCKET_ERROR)
+			return 99;
+		printf("%s**\n", listOnline[ui1].username);
+		return 44;
+	}
+	//LeaveCriticalSection(&critical);
+	return 99;
+}
+
+int handleCreateRoom(char* data, Session session) {
+	int i;
+	for (i = 0; i < 100; i++) 
+	if (listRoomChat[i].status > -1 && strcmp(listRoomChat[i].roomName, data) == 0){
+		return 61;
+	}
+	for (i = 0; i < 100; i++)
+		if (listRoomChat[i].status == -1) {
+			int ui = 0;
+			for (ui = 0; ui < listOnline.size(); ui++)
+				if (!strcmp(listOnline[ui].username, session.username))
+					break;
+			if (ui == listOnline.size())
+				return 16;
+			listOnline[ui].status = 1;
+			listRoomChat[i].status = 0;
+			listRoomChat[i].num = 1;
+			strcpy(listRoomChat[i].roomName, data);
+			listRoomChat[i].user[0] = ui;
+			return 60;
+		}
+	if (i == 100) {
+		printf("Full room");
+		return 99;
+	}
+	return 99;
+}
+
+int handleInviteRoom(char* data, Session session) {
+	char* room;
+	char* user;
+	split(data, &room, &user);
+	int i;
+	if (!strcmp(session.username, user))
+		return 64;
+	for (i = 0; i < 100; i++)
+		if (listRoomChat[i].status > -1 && listRoomChat[i].num > 0 && strcmp(listRoomChat[i].roomName, room) == 0) {
+			break;
+		}
+	if (i == 100)
+		return 63;
+
+	int ui = 0;
+	for (ui = 0; ui < listOnline.size(); ui++)
+		if (!strcmp(listOnline[ui].username, session.username))
+			break;
+	if (ui == listOnline.size())
+		return 16;
+
+	for (ui = 0; ui < listOnline.size(); ui++)
+		if (!strcmp(listOnline[ui].username, user))
+			break;
+	
+	if (ui == listOnline.size())
+		return 64;
+
+	if (listOnline[ui].status == 1)
+		return 66;
+	//printf("4-%s-%s\n", room, user);
+	char sendBuff[BUFF_SIZE];
+	strcpy(sendBuff, "INVITE_ROOM ");
+	strcat(sendBuff, listRoomChat[i].roomName);
+	strcat(sendBuff, " ");
+	strcat(sendBuff, session.username);
+	int ret = send(listOnline[ui].connSock, sendBuff, strlen(sendBuff), 0);
+	if (ret == SOCKET_ERROR)
+		printf("invite room chat fail with code: %d \n", WSAGetLastError());
+	return -1;
+}
+
+int handleResponseRoom(char* data, Session session) {
+	char* room;
+	char* accept;
+	split(data, &room, &accept);
+	int i;
+	for (i = 0; i < 100; i++)
+		if (listRoomChat[i].status > -1 && listRoomChat[i].num > 0 && !strcmp(listRoomChat[i].roomName, room)) {
+			break;
+		}
+	if (i == 100)
+		return 63;
+
+	int ui = 0;
+	for (ui = 0; ui < listOnline.size(); ui++)
+		if (!strcmp(listOnline[ui].username, session.username))
+			break;
+	if (ui == listOnline.size())
+		return 16;
+
+	if (!strcmp(accept, "1")) {//accept;
+		listRoomChat[i].status = 1;
+		listRoomChat[i].user[listRoomChat[i].num] = ui;
+		listRoomChat[i].num++;
+		listOnline[ui].status = 1;
+		char sendBuff[BUFF_SIZE];
+		strcpy(sendBuff, "NEW_MEM ");
+		strcat(sendBuff, session.username);
+		for (int j = 0; j < listRoomChat[i].num; j++) {
+			int userIdx = listRoomChat[i].user[j];
+			if (userIdx < 0 || userIdx >= listOnline.size())
+				continue;
+			int ret = send(listOnline[userIdx].connSock, sendBuff, strlen(sendBuff), 0);
+		}
+		return -1;
+	}
+	else {
+		listOnline[ui].status = 0;
+		return -1;
+	}
+	return 99;
+}
+
+int handleOutRoom(char* data, Session session) {
+	int i;
+	for (i = 0; i < 100; i++)
+		if (listRoomChat[i].status > -1 && listRoomChat[i].num > 0 && !strcmp(listRoomChat[i].roomName, data)) {
+			break;
+		}
+	if (i == 100)
+		return 63;
+
+	int ui = 0;
+	for (ui = 0; ui < listOnline.size(); ui++)
+		if (!strcmp(listOnline[ui].username, session.username))
+			break;
+	if (ui == listOnline.size())
+		return 16;
+
+	for (int j = 0; j < listRoomChat[i].num; j++)
+		if (listRoomChat[i].user[j] == ui) {
+			listOnline[ui].status = 0;
+			listRoomChat[i].num--;
+			
+			for (int t = j; t < listRoomChat[i].num; t++)
+				listRoomChat[i].user[t] = listRoomChat[i].user[t + 1];
+
+			char sendBuff[BUFF_SIZE];
+			strcpy(sendBuff, "OUT_MEM ");
+			strcat(sendBuff, session.username);
+
+			for (int t = 0; t < listRoomChat[i].num; t++){
+				int userIdx = listRoomChat[i].user[t];
+				if (userIdx < 0 || userIdx >= listOnline.size())
+					continue;
+				int ret = send(listOnline[userIdx].connSock, sendBuff, strlen(sendBuff), 0);
+			}
+			if (listRoomChat[i].num == 0) {
+				listRoomChat[i].status = -1;
+				strcpy(listRoomChat[i].roomName, "");
+			}
+			break;
+		}
+	return 80;
+}
+
+int handleSendRoom(char* data, Session session) {
+	char *room, *message;
+	split(data, &room, &message);
+	int i;
+	for (i = 0; i < 100; i++)
+		if (listRoomChat[i].status > -1 && listRoomChat[i].num > 0 && !strcmp(listRoomChat[i].roomName, room)) {
+			break;
+		}
+	if (i == 100)
+		return 63;
+
+	int ui = 0;
+	for (ui = 0; ui < listOnline.size(); ui++)
+		if (!strcmp(listOnline[ui].username, session.username))
+			break;
+	if (ui == listOnline.size())
+		return 16;
+
+	char sendBuff[BUFF_SIZE];
+	strcpy(sendBuff, "SEND_ROOM ");
+	strcat(sendBuff, session.username);
+	strcat(sendBuff, " ");
+	strcat(sendBuff, message);
+
+	for (int j = 0; j < listRoomChat[i].num; j++){
+		int userIdx = listRoomChat[i].user[j];
+		if (userIdx < 0 || userIdx >= listOnline.size() || userIdx == ui)
+				continue;
+		int ret = send(listOnline[userIdx].connSock, sendBuff, strlen(sendBuff), 0);
+	}
+	return -1;
 }
 /**
 *	@handleMessage: return the code when user send message
@@ -518,7 +721,9 @@ int handleEndChat( Session session) {
 **/
 int handleMessage(char* str, Session &session) {
 	//printf("*%s*\n", session.username);
-
+	if (!strcmp(str, "GET_USER")) {
+		return sendListUserOnline(session.connSock);
+	}
 	int res = 0;
 	char* header;
 	char* data;
@@ -542,7 +747,22 @@ int handleMessage(char* str, Session &session) {
 		res = handleSendChat(data, session);
 	}
 	else if (!strcmp(header, "END_CHAT")) {
-		res = handleEndChat( session);
+		res = handleEndChat(data, session);
+	}
+	else if (!strcmp(header, "CREATE_ROOM")) {
+		res = handleCreateRoom(data, session);
+	}
+	else if (!strcmp(header, "OUT_ROOM")) {
+		res = handleOutRoom(data, session);
+	}
+	else if (!strcmp(header, "INVITE_ROOM")) {
+		res = handleInviteRoom(data, session);
+	}
+	else if (!strcmp(header, "RESPONSE_ROOM")) {
+		res = handleResponseRoom(data, session);
+	}
+	else if (!strcmp(header, "SEND_ROOM")) {
+		res = handleSendRoom(data, session);
 	}
 	else {
 		res = 99;
@@ -550,21 +770,17 @@ int handleMessage(char* str, Session &session) {
 	return res;
 }
 
-void sendListUserOnline(SOCKET connect) {
+int sendListUserOnline(SOCKET connect) {
 	char buff[BUFF_SIZE];
-	int ret;
-	strcpy(buff, "GET_USER ");
-	char str[10];
-	EnterCriticalSection(&critical);
+	strcpy(buff, "ONLINE ");
 	for (int i = 0; i < listOnline.size(); i++) {
-		itoa(i + 1, str, 10);
-		strcat(buff, "\n");
-		strcat(buff, str);
-		strcat(buff, ".");
 		strcat(buff, listOnline[i].username);
-		
+		strcat(buff, " ");
 	}
-	LeaveCriticalSection(&critical);
-	printf("%s", buff);
-	ret = send(connect, buff, strlen(buff), 0);
+	int ret = send(connect, buff, strlen(buff), 0);
+	if (ret == SOCKET_ERROR) {
+		printf("Send list online users fail with code: %d\n", WSAGetLastError());
+		return -1;
+	}
+	return 30;
 }
